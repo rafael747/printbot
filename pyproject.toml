@@ -1,0 +1,15 @@
+[project]
+name = "printbot"
+version = "0.1.0"
+description = "WhatsApp bot handle print jobs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "black>=26.1.0",
+    "fastapi[standard]>=0.129.0",
+    "pdf2image>=1.17.0",
+    "pycups>=2.0.4",
+    "python-escpos>=3.1",
+    "python-sane>=2.9.2 ; sys_platform == 'linux'",
+    "pywa>=3.8.0",
+]
