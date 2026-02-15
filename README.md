@@ -1,6 +1,10 @@
-# Printbot
+<p align="center">
+    <picture>
+        <img width="256" height="256" alt="printbot" src="https://github.com/user-attachments/assets/00ff609c-27dd-4a9d-8b27-ad013f3a7364" />
+    </picture>
+</p>
 
-WhatsApp bot handover print jobs to thermal and normal printers
+## WhatsApp bot to handover print jobs to thermal and normal printers
 
 ## Prerequisites
 
