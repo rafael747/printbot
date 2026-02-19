@@ -118,8 +118,10 @@ def send_to_printer(
             return False
 
         if caption:
+            printer.ln(1)
             printer.set(align="center")
             printer.block_text(caption)
+            printer.ln(1)
             printer.set_with_default()
         printer.ln(3)
         status = printer.is_online()
