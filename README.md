@@ -51,6 +51,15 @@ The server will start (default: http://127.0.0.1:8000).
 
 **Note:** For WhatsApp webhooks to work, your server must be reachable from the internet (e.g. via ngrok or a deployed host). Point your WhatsApp app webhook URL to `https://your-host/printbot`.
 
+### Example
+
+<picture>
+<img width="300" alt="whatsapp" src="https://github.com/user-attachments/assets/ba596156-2631-47d8-bbce-a830bc8fb22b" />
+<img width="350" alt="thermal printer" src="https://github.com/user-attachments/assets/9e3e0fb9-988e-4998-80c2-9baab6600f48" />
+</picture>
+
+---
+
 ## ESP32 TCP to BLE Proxy
 
 The thermal printer BLE range might be too small depending on the server location.
