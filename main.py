@@ -61,7 +61,7 @@ def check_user(func):
 
     @functools.wraps(func)
     def wrapper(client: WhatsApp, msg: types.Message):
-        if not msg.from_user.wa_id in WHITELISTED_NUMBERS:
+        if msg.from_user.wa_id not in WHITELISTED_NUMBERS:
             msg.react("🚫")
             msg.reply_text(
                 "You are not whitelisted to use this bot. Please contact the admin to be whitelisted."
@@ -88,6 +88,7 @@ def send_to_printer(
     data: Any,
     data_type: Literal["text", "image", "qr", "control"],
     job: types.Message | None = None,
+    caption: str | None = None,
 ) -> bool:
     """Send content to the network printer and optionally report status to the user."""
     printer = None
@@ -116,6 +117,10 @@ def send_to_printer(
                 return printer.is_online()
             return False
 
+        if caption:
+            printer.set(align="center")
+            printer.block_text(caption)
+            printer.set_with_default()
         printer.ln(3)
         status = printer.is_online()
         _report_job(job, status)
@@ -204,7 +209,7 @@ def print_image(client: WhatsApp, msg: types.Message):
     if click.data == "print_image":
         job = msg.reply_text("Printing image...")  # Reply to the button click
         image_to_print = Image.open(io.BytesIO(msg.media.get_bytes()))
-        send_to_printer(image_to_print, "image", job)
+        send_to_printer(image_to_print, "image", job, msg.caption)
     return
 
 

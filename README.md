@@ -50,3 +50,28 @@ uv run fastapi dev
 The server will start (default: http://127.0.0.1:8000).
 
 **Note:** For WhatsApp webhooks to work, your server must be reachable from the internet (e.g. via ngrok or a deployed host). Point your WhatsApp app webhook URL to `https://your-host/printbot`.
+
+## ESP32 TCP to BLE Proxy
+
+The thermal printer BLE range might be too small depending on the server location.
+
+In order to mitigate this issue I embedded an ESP32 C3 on the thermal printer. This device will connect to the WIFI and to the thermal printer via BLE (actually any BLE device should work as well).
+
+The ESP32 will then listen on port TCP 8000. Any data sent to the tcp server will be forwarded to the BLE device.
+
+If the BLE connection is lost, the ESP32 will also stop the TCP Server. If the connection to the BLE device is not possible e.g.: device is off, the ESP32 will go automatically to deep sleep after a few retries.
+
+**Required variables:**
+
+Create a file named `secrets.h` in the `esp32-tcp-to-ble-proxy` folder (use `secrets.h.example` as reference)
+
+| Variable | Description |
+|----------|-------------|
+| `WIFI_SSID` | Your WIFI SSID |
+| `WIFI_PASSWORD` | Your WIFI Password |
+| `BLE_MAC_ADDRESS` | The BLE MAC address of your device |
+| `BLE_SERVICE_UUID` | The Service UUID Address of your device |
+| `BLE_CHARACTERISTIC_UUID` | The Characteristic UUID of your device  |
+
+
+> Remember to enable `USB CDC on Boot` if you are unable to see serial output.
