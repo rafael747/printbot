@@ -32,6 +32,7 @@ PRINTER_ADDR = os.getenv("PRINTER_ADDR")
 PRINTER_PORT = os.getenv("PRINTER_PORT")
 PRINTER_SOCKET = os.getenv("PRINTER_SOCKET")
 WHITELISTED_NUMBERS = os.getenv("WHITELISTED_NUMBERS").split(",")
+CUPS_SERVER_IP = os.getenv("CUPS_SERVER_IP")
 CUPS_PRINTER_NAME = os.getenv("CUPS_PRINTER_NAME")
 
 
@@ -252,6 +253,8 @@ def print_document(client: WhatsApp, msg: types.Message):
         try:
             document = msg.document.download(path="/tmp")
             # print on cups printer
+            if CUPS_SERVER_IP:
+                cups.setServer(CUPS_SERVER_IP)
             c = cups.Connection()
             c.printFile(
                 CUPS_PRINTER_NAME,
@@ -334,6 +337,8 @@ def check_printer_status(client: WhatsApp, clb: types.CallbackButton):
         clb.reply_text("Thermal printer status: OK")
     else:
         clb.reply_text("Thermal printer status: Not Connected")
+    if CUPS_SERVER_IP:
+        cups.setServer(CUPS_SERVER_IP)
     c = cups.Connection()
     status = c.getPrinters()[CUPS_PRINTER_NAME]["printer-state"]
     status_map = {3: "OK (Idle)", 4: "Printing", 5: "Stopped"}
