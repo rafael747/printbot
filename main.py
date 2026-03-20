@@ -8,11 +8,13 @@ from datetime import datetime
 from typing import Any, Literal
 
 import cups
+import requests
 from dotenv import load_dotenv
 from escpos.constants import RT_STATUS_ONLINE
 from escpos.exceptions import ImageWidthError
-from escpos.printer import Network
-from fastapi import FastAPI
+from escpos.printer import Network, Serial
+from fastapi import FastAPI, File, HTTPException, UploadFile, Security, Form
+from fastapi.security import APIKeyHeader
 from pdf2image import convert_from_bytes
 from PIL import Image
 from pywa import WhatsApp, filters, listeners, types
@@ -28,13 +30,25 @@ load_dotenv()
 PHONE_ID = os.getenv("WA_PHONE_ID")
 TOKEN = os.getenv("WA_TOKEN")
 VERIFY_TOKEN = os.getenv("WA_VERIFY_TOKEN")
-PRINTER_ADDR = os.getenv("PRINTER_ADDR")
-PRINTER_PORT = os.getenv("PRINTER_PORT")
-PRINTER_SOCKET = os.getenv("PRINTER_SOCKET")
+
 WHITELISTED_NUMBERS = os.getenv("WHITELISTED_NUMBERS").split(",")
+
+THERMAL_PRINTER_TYPE = os.getenv("THERMAL_PRINTER_TYPE")
+THERMAL_PRINTER_ADDR = os.getenv("THERMAL_PRINTER_ADDR")
+THERMAL_PRINTER_PORT = os.getenv("THERMAL_PRINTER_PORT")
+THERMAL_PRINTER_SOCKET = os.getenv("THERMAL_PRINTER_SOCKET")
+THERMAL_PRINTER_PROFILE = os.getenv("THERMAL_PRINTER_PROFILE")
+
 CUPS_SERVER_IP = os.getenv("CUPS_SERVER_IP")
 CUPS_PRINTER_NAME = os.getenv("CUPS_PRINTER_NAME")
 
+PAPERLESS_POST_URL = os.getenv("PAPERLESS_POST_URL")
+PAPERLESS_TOKEN = os.getenv("PAPERLESS_TOKEN")
+PAPERLESS_WEBHOOK_TOKEN = os.getenv("PAPERLESS_WEBHOOK_TOKEN")
+PAPERLESS_NOTIFICATION_NUMBERS = os.getenv("PAPERLESS_NOTIFICATION_NUMBERS").split(",")
+
+CF_ACCESS_CLIENT_ID = os.getenv("CF_ACCESS_CLIENT_ID")
+CF_ACCESS_CLIENT_SECRET = os.getenv("CF_ACCESS_CLIENT_SECRET")
 
 fastapi_app = FastAPI()  # FastAPI server
 
@@ -61,7 +75,7 @@ def check_user(func):
     """Check if the user is whitelisted to use the bot (if number is in WHITELISTED_NUMBERS)."""
 
     @functools.wraps(func)
-    def wrapper(client: WhatsApp, msg: types.Message):
+    def wrapper(client: WhatsApp, msg: types.Message | types.CallbackSelection):
         if msg.from_user.wa_id not in WHITELISTED_NUMBERS:
             msg.react("🚫")
             msg.reply_text(
@@ -94,12 +108,20 @@ def send_to_printer(
     """Send content to the network printer and optionally report status to the user."""
     printer = None
     try:
-        printer = Network(
-            host=PRINTER_ADDR,
-            port=int(PRINTER_PORT),
-            profile="ZJ-5870",
-            timeout=10,
-        )
+        if THERMAL_PRINTER_TYPE == "TCP":
+            printer = Network(
+                host=THERMAL_PRINTER_ADDR,
+                port=int(THERMAL_PRINTER_PORT),
+                profile=THERMAL_PRINTER_PROFILE,
+                timeout=10,
+            )
+        elif THERMAL_PRINTER_TYPE == "SERIAL":
+            printer = Serial(
+                devfile=THERMAL_PRINTER_SOCKET,
+                profile=THERMAL_PRINTER_PROFILE,
+            )
+        else:
+            raise ValueError(f"Invalid thermal printer type: {THERMAL_PRINTER_TYPE}")
 
         if data_type == "text":
             printer.text(data)
@@ -144,6 +166,31 @@ def send_to_printer(
                 print(f"Error closing printer: {e}")
 
 
+def paperless_store(msg: types.Message) -> bool:
+    """Store media in Paperless ngx"""
+    job = msg.reply_text("Storing document in Paperless...")
+    job.react("🔄")
+    response = requests.post(
+        PAPERLESS_POST_URL,
+        headers={
+            "Authorization": f"Token {PAPERLESS_TOKEN}",
+            "CF-Access-Client-Id": CF_ACCESS_CLIENT_ID,
+            "CF-Access-Client-Secret": CF_ACCESS_CLIENT_SECRET,
+        },
+        files={
+            "document": (
+                msg.media.filename or msg.caption or "Untitled",
+                msg.media.get_bytes(),
+            )
+        },
+        timeout=10,
+    )
+    _report_job(
+        job, response.status_code == 200, "Failed to store document in Paperless"
+    )
+    return response.status_code == 200
+
+
 # Handle incoming messages
 @wa.on_message(
     filters.matches("Hey", "Hi", "Help", "Hello", "Config", ignore_case=True),
@@ -155,13 +202,37 @@ def help_menu(client: WhatsApp, msg: types.Message):
     msg.react("🚧")
     msg.reply_text(
         text=f"Hello {msg.from_user.name}! How can I help you today?",
-        buttons=[
-            types.Button(title="Scan document", callback_data="scan_document"),
-            types.Button(title="Check printer", callback_data="check_printer_status"),
-            types.Button(
-                title="Whitelist number", callback_data="whitelist_phone_number"
-            ),
-        ],
+        # buttons=[
+        #     types.Button(title="Scan document", callback_data="scan_document"),
+        #     types.Button(title="Check printer", callback_data="check_printer_status"),
+        #     types.Button(
+        #         title="Whitelist number", callback_data="whitelist_phone_number"
+        #     ),
+        # ],
+        buttons=types.SectionList(
+            button_title="Options",
+            sections=[
+                types.Section(
+                    title="Main Menu",
+                    rows=[
+                        types.SectionRow(
+                            title="Scan document", callback_data="scan_document"
+                        ),
+                        types.SectionRow(
+                            title="Store doc in Paperless",
+                            callback_data="paperless_store_option",
+                        ),
+                        types.SectionRow(
+                            title="Check printer", callback_data="check_printer_status"
+                        ),
+                        types.SectionRow(
+                            title="Whitelist number",
+                            callback_data="whitelist_phone_number",
+                        ),
+                    ],
+                )
+            ],
+        ),
     )
 
 
@@ -200,12 +271,13 @@ def print_image(client: WhatsApp, msg: types.Message):
         text="Image received, do you want to print it?",
         buttons=[
             types.Button(title="Print", callback_data="print_image"),
+            # types.Button(title="Store in Paperless", callback_data="paperless_store"),
             types.Button(title="Cancel", callback_data="cancel_print_image"),
         ],
         quote=True,
     )
     try:
-        click = option.wait_for_click(timeout=60)
+        click = option.wait_for_click(timeout=30)
     except listeners.ListenerTimeout:
         msg.reply_text("Timeout waiting for option")  # Reply to the button click
         return
@@ -213,6 +285,8 @@ def print_image(client: WhatsApp, msg: types.Message):
         job = msg.reply_text("Printing image...")  # Reply to the button click
         image_to_print = Image.open(io.BytesIO(msg.media.get_bytes()))
         send_to_printer(image_to_print, "image", job, msg.caption)
+    if click.data == "paperless_store":
+        paperless_store(msg)
     return
 
 
@@ -220,23 +294,26 @@ def print_image(client: WhatsApp, msg: types.Message):
 @check_user
 def print_document(client: WhatsApp, msg: types.Message):
     """Print PDF documents on the thermal printer or the normal printer."""
-    if msg.document.extension != ".pdf":
-        _report_job(msg, False, "Only PDF documents are supported.")
-        return
+
     option = msg.reply_text(
         text="Document received, do you want to print it?",
         buttons=[
             types.Button(title="Normal printer", callback_data="print_on_printer"),
             types.Button(title="Thermal printer", callback_data="print_on_thermal"),
-            types.Button(title="Cancel", callback_data="cancel_print"),
+            types.Button(title="Store in Paperless", callback_data="paperless_store"),
+            # types.Button(title="Cancel", callback_data="cancel_print"),
         ],
         quote=True,
     )
     try:
-        click = option.wait_for_click(timeout=60)
+        click = option.wait_for_click(timeout=30)
     except listeners.ListenerTimeout:
         msg.reply_text("Timeout waiting for option")  # Reply to the button click
         return
+    if click.data.startswith("print_"):
+        if msg.document.extension != ".pdf":
+            _report_job(click, False, "Only PDF documents are supported.")
+            return
     if click.data == "print_on_thermal":
         job = msg.reply_text(
             "Printing document on thermal printer..."
@@ -267,42 +344,90 @@ def print_document(client: WhatsApp, msg: types.Message):
         except Exception as e:
             print(e)
             job.react("❌")
+    if click.data == "paperless_store":
+        paperless_store(msg)
 
 
 # Handle incoming button clicks
-@wa.on_callback_button(filters.matches("scan_document"))
-def scan_document(client: WhatsApp, clb: types.CallbackButton):
+@wa.on_callback_selection(filters.matches("scan_document"))
+@check_user
+def scan_document(client: WhatsApp, clb: types.CallbackSelection):
     """Scan documents on the normal printer's scanner."""
     option = clb.reply_text(
         text="How do you want to scan it?",
-        buttons=[
-            types.Button(title="Color Scan, Low Res", callback_data="color_scan_low"),
-            types.Button(title="Color Scan, High Res", callback_data="color_scan_high"),
-            types.Button(title="BW Scan, Low Res", callback_data="bw_scan_low"),
-            #  types.Button(
-            #      title="BW Scan, High Resolution",
-            #      callback_data="bw_scan_high"
-            #  ),
-        ],
+        buttons=types.SectionList(
+            button_title="Scan Options",
+            sections=[
+                types.Section(
+                    title="Color Scan",
+                    rows=[
+                        types.SectionRow(
+                            title="Low Res",
+                            description="75 DPI",
+                            callback_data="color_scan_low",
+                        ),
+                        types.SectionRow(
+                            title="High Res",
+                            description="300 DPI",
+                            callback_data="color_scan_high",
+                        ),
+                        types.SectionRow(
+                            title="highest Res",
+                            description="600 DPI",
+                            callback_data="color_scan_highest",
+                        ),
+                    ],
+                ),
+                types.Section(
+                    title="BW Scan",
+                    rows=[
+                        types.SectionRow(
+                            title="Low Res",
+                            description="75 DPI",
+                            callback_data="bw_scan_low",
+                        ),
+                        types.SectionRow(
+                            title="High Res",
+                            description="300 DPI",
+                            callback_data="bw_scan_high",
+                        ),
+                        types.SectionRow(
+                            title="highest Res",
+                            description="600 DPI",
+                            callback_data="bw_scan_highest",
+                        ),
+                    ],
+                ),
+            ],
+        ),
         quote=True,
     )
     try:
-        click = option.wait_for_click(timeout=60)
+        click = option.wait_for_selection(timeout=30)
     except listeners.ListenerTimeout:
         clb.reply_text("Timeout waiting for option")
         return
     # define mode and resolution
-    mode = "color"
-    resolution = 75
+    mode = None
+    resolution = None
+    if click.data == "color_scan_low":
+        mode = "color"
+        resolution = 75
     if click.data == "color_scan_high":
         mode = "color"
         resolution = 300
+    if click.data == "color_scan_highest":
+        mode = "color"
+        resolution = 600
     if click.data == "bw_scan_low":
         mode = "gray"
         resolution = 75
     if click.data == "bw_scan_high":
         mode = "gray"
         resolution = 300
+    if click.data == "bw_scan_highest":
+        mode = "gray"
+        resolution = 600
 
     click.react("🔄")
 
@@ -330,8 +455,26 @@ def scan_document(client: WhatsApp, clb: types.CallbackButton):
     doc_buffer.close()
 
 
-@wa.on_callback_button(filters.matches("check_printer_status"))
-def check_printer_status(client: WhatsApp, clb: types.CallbackButton):
+@wa.on_callback_selection(filters.matches("paperless_store_option"))
+@check_user
+def paperless_store_option(client: WhatsApp, clb: types.CallbackSelection):
+    """Store the document in Paperless ngx"""
+    try:
+        msg = clb.reply_text(
+            "Send me the document to be stored in Paperless"
+        ).wait_for_reply(
+            filters=filters.OrFilter(filters.document, filters.image), timeout=60
+        )
+        paperless_store(msg)
+
+    except listeners.ListenerTimeout:
+        clb.reply_text("Timeout waiting for document")
+        return
+
+
+@wa.on_callback_selection(filters.matches("check_printer_status"))
+@check_user
+def check_printer_status(client: WhatsApp, clb: types.CallbackSelection):
     """Check the status of both the thermal printer and the normal printer."""
     if send_to_printer(RT_STATUS_ONLINE, "control", None):
         clb.reply_text("Thermal printer status: OK")
@@ -339,14 +482,20 @@ def check_printer_status(client: WhatsApp, clb: types.CallbackButton):
         clb.reply_text("Thermal printer status: Not Connected")
     if CUPS_SERVER_IP:
         cups.setServer(CUPS_SERVER_IP)
-    c = cups.Connection()
-    status = c.getPrinters()[CUPS_PRINTER_NAME]["printer-state"]
-    status_map = {3: "OK (Idle)", 4: "Printing", 5: "Stopped"}
-    clb.reply_text(f"Epson printer status: {status_map[status]}")
+    try:
+        c = cups.Connection()
+        status = c.getPrinters()[CUPS_PRINTER_NAME]["printer-state"]
+        status_map = {3: "OK (Idle)", 4: "Printing", 5: "Stopped"}
+        clb.reply_text(f"Epson printer status: {status_map[status]}")
+    except Exception as e:
+        print(e)
+        clb.reply_text("Epson printer status: Error")
+        return
 
 
-@wa.on_callback_button(filters.matches("whitelist_phone_number"))
-def whitelist_phone_number(client: WhatsApp, clb: types.CallbackButton):
+@wa.on_callback_selection(filters.matches("whitelist_phone_number"))
+@check_user
+def whitelist_phone_number(client: WhatsApp, clb: types.CallbackSelection):
     """Whitelist phone numbers to use the bot."""
     try:
         msg = clb.reply_text("Send me the contact to be whitelisted").wait_for_reply(
@@ -367,3 +516,40 @@ def whitelist_phone_number(client: WhatsApp, clb: types.CallbackButton):
     except listeners.ListenerTimeout:
         clb.reply_text("Timeout waiting for contact")
         return
+
+
+@fastapi_app.post("/notify")
+def notify_user(
+    api_key=Security(APIKeyHeader(name="X-API-Key")),
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    filename: str = Form(...),
+):
+    """Receive a POST webhook with Authorization: Token header and a document in the form body."""
+    if not PAPERLESS_WEBHOOK_TOKEN or not api_key:
+        raise HTTPException(status_code=401, detail="Missing authorization")
+    # Support "Token <value>" or "Bearer <value>"
+    if api_key != PAPERLESS_WEBHOOK_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Document from form body (multipart/form-data)
+
+    for number in PAPERLESS_NOTIFICATION_NUMBERS:
+        msg = wa.send_template(
+            to=number,
+            name="voucher_reminder_1",
+            language=types.templates.TemplateLanguage.ENGLISH_US,
+            params=[
+                types.templates.BodyText.params(
+                    voucher_name=title,
+                    expiry_date="less than 15 days",
+                ),
+                types.templates.HeaderDocument.params(
+                    document=file.file.read(),
+                    filename=filename,
+                    mime_type=file.content_type,
+                ),
+            ],
+        )
+        print(f"Sent notification to {number}: {msg}")
+    return {"status": "ok"}
