@@ -525,14 +525,15 @@ def notify_user(
     title: str = Form(...),
     filename: str = Form(...),
 ):
-    """Receive a POST webhook with Authorization: Token header and a document in the form body."""
+    """Receive a POST webhook with X-API-Key header and a document in the form body."""
     if not PAPERLESS_WEBHOOK_TOKEN or not api_key:
         raise HTTPException(status_code=401, detail="Missing authorization")
-    # Support "Token <value>" or "Bearer <value>"
     if api_key != PAPERLESS_WEBHOOK_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     # Document from form body (multipart/form-data)
+
+    file_content = file.file.read()
 
     for number in PAPERLESS_NOTIFICATION_NUMBERS:
         msg = wa.send_template(
@@ -545,7 +546,7 @@ def notify_user(
                     expiry_date="less than 15 days",
                 ),
                 types.templates.HeaderDocument.params(
-                    document=file.file.read(),
+                    document=file_content,
                     filename=filename,
                     mime_type=file.content_type,
                 ),
