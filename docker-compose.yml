@@ -1,7 +1,12 @@
 services:
   printbot:
     build: .
+    restart: unless-stopped
     ports:
       - "8080:8000"
     env_file:
       - .env
+    devices: #comment if you are not passing a BLE device
+      - "/dev/rfcomm0:/dev/rfcomm0"
+    group_add:
+      - dialout
